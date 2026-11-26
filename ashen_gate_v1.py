@@ -15,6 +15,7 @@ ASHEN GATE — оригинальный псевдо-3D fantasy-FPS на Pygame.
 import math
 import random
 import sys
+import struct
 import pygame
 
 pygame.init()
@@ -37,7 +38,90 @@ font = pygame.font.SysFont("consolas", 22, bold=True)
 small_font = pygame.font.SysFont("consolas", 16)
 big_font = pygame.font.SysFont("consolas", 52, bold=True)
 
+# Процедурные ретро-SFX: генерируются при запуске, внешние файлы не нужны.
+AUDIO_OK = False
+SOUNDS = {}
+MUSIC_CHANNEL = None
+try:
+    pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+    AUDIO_OK = True
+except pygame.error:
+    pass
 
+
+def make_chip_sound(kind, duration=0.22, volume=0.45):
+    """Создаёт короткий синтезированный звук в стиле старых FPS."""
+    if not AUDIO_OK:
+        return None
+    rate = 22050
+    count = int(rate * duration)
+    samples = bytearray()
+    phase = 0.0
+    for i in range(count):
+        t = i / rate
+        x = i / max(1, count - 1)
+        if kind == "pistol":
+            freq = 150 - 65*x
+            env = (1-x)**5
+            wave = (0.72 if math.sin(phase) >= 0 else -0.72) + random.uniform(-0.32, 0.32)
+        elif kind == "shotgun":
+            freq = 105 - 70*x
+            env = (1-x)**3
+            wave = random.uniform(-1, 1)*0.72 + math.sin(phase)*0.45
+        elif kind == "reload":
+            freq = 620 if x < 0.5 else 390
+            env = (1-x)**2 * (0.65 + 0.35*abs(math.sin(x*18)))
+            wave = 1 if math.sin(phase) >= 0 else -1
+        elif kind == "pickup":
+            freq = 520 + 520*x
+            env = (1-x)**2
+            wave = math.sin(phase) * 0.8 + (1 if math.sin(phase*2) > 0 else -1)*0.2
+        elif kind == "key":
+            freq = 720 + 420*math.sin(x*math.pi)
+            env = (1-x)**2
+            wave = 1 if math.sin(phase) >= 0 else -1
+        elif kind == "enemy":
+            freq = 115 - 48*x
+            env = (1-x)**2
+            wave = math.sin(phase) * 0.55 + random.uniform(-0.55, 0.55)
+        elif kind == "death":
+            freq = 240 - 190*x
+            env = (1-x)**2
+            wave = random.uniform(-0.8, 0.8) + math.sin(phase)*0.25
+        elif kind == "door":
+            freq = 170 - 100*x
+            env = (1-x)**2
+            wave = math.sin(phase) * 0.55 + (1 if math.sin(phase*0.5) > 0 else -1)*0.35
+        else:
+            freq = 330
+            env = (1-x)**2
+            wave = math.sin(phase)
+        phase += 2*math.pi*freq/rate
+        value = int(max(-1, min(1, wave * env * volume)) * 32767)
+        samples.extend(struct.pack('<h', value))
+    return pygame.mixer.Sound(buffer=bytes(samples))
+
+
+if AUDIO_OK:
+    SOUNDS = {
+        "pistol": make_chip_sound("pistol", 0.19, 0.55),
+        "shotgun": make_chip_sound("shotgun", 0.34, 0.68),
+        "reload": make_chip_sound("reload", 0.16, 0.34),
+        "pickup": make_chip_sound("pickup", 0.16, 0.34),
+        "key": make_chip_sound("key", 0.28, 0.34),
+        "enemy": make_chip_sound("enemy", 0.28, 0.28),
+        "death": make_chip_sound("death", 0.30, 0.40),
+        "door": make_chip_sound("door", 0.42, 0.42),
+    }
+
+
+def play_sfx(name):
+    sound = SOUNDS.get(name)
+    if sound is not None:
+        sound.play()
+
+# Все существа, названия и дизайн придуманы для этой игры.
+# Число противников рассчитано под размер каждой карты.
 LEVEL_ENEMY_COUNTS = [4, 5, 6, 8]
 LEVEL_NAMES = ["Пепельный двор", "Багровые катакомбы",
                "Зал запутанных коридоров"]
@@ -105,7 +189,7 @@ MAPS = [
 ],
 ]
 
-
+# Декоративные палитры четырёх адских областей
 PALETTES = [
     ((78, 42, 39), (170, 75, 48), (235, 125, 65)),
     ((78, 24, 35), (160, 42, 55), (245, 90, 70)),
@@ -162,7 +246,7 @@ def random_floor_position(used, min_distance=2.7, spacing=1.45):
         if any(math.hypot(x-a, y-b) < spacing for a, b in used):
             continue
         return x, y
-    
+    # Запасной поиск по клеткам
     for yy in range(1, map_h-1):
         for xx in range(1, map_w-1):
             if not is_wall(xx+0.5, yy+0.5) and (xx, yy) not in used:
@@ -174,7 +258,7 @@ def setup_level(index, floor=0):
     global has_key, key_pos, exit_pos, enemies, pickups, level_time, message, message_timer, weapon_type, shotgun_owned, shotgun_loaded, reload_timer, reload_stage, weapon_anim
     level = index
     floor_index = floor
-
+    # Второй уровень состоит из двух отдельных этажей.
     map_index = 0 if level == 0 else (1 if level == 1 and floor_index == 0 else
                                       2 if level == 1 else 3)
     world = MAPS[map_index]
@@ -186,7 +270,7 @@ def setup_level(index, floor=0):
     reload_timer = 0.0
     reload_stage = 0
     weapon_anim = 0.0
-    
+    # Выход и ключ расположены на свободных клетках карты
     exit_pos = (map_w-1.8, map_h-1.8)
     key_candidates = [(x+0.5, y+0.5) for y in range(1, map_h-1)
                       for x in range(1, map_w-1)
@@ -214,7 +298,7 @@ def setup_level(index, floor=0):
             "phase": random.random()*6.28
         })
 
-    
+    # Немного припасов на каждом уровне: обычно по две аптечки и две пачки зарядов.
     pickups = []
     pickup_specs = [("health", 20), ("health", 20),
                     ("ammo", 8), ("ammo", 8)]
@@ -290,12 +374,12 @@ def line_of_sight(x1, y1, x2, y2):
 def draw_world():
     wall_dark, wall_mid, glow = PALETTES[level]
     screen.fill((15, 8, 13))
-    
+    # Небо — дымный градиент
     for y in range(HALF_H):
         k = y/HALF_H
         col = (int(28-12*k), int(13-5*k), int(22-6*k))
         pygame.draw.line(screen, col, (0, y), (WIDTH, y))
-    
+    # Пол с раскалёнными трещинами
     pygame.draw.rect(screen, (34, 17, 20), (0, HALF_H, WIDTH, HALF_H))
     for i in range(1, 12):
         y = HALF_H + int((i/12)**2 * HALF_H)
@@ -309,7 +393,7 @@ def draw_world():
         x = ray*SCALE
         y = HALF_H-wall_h//2
         fog = max(0.13, 1-depth/MAX_DEPTH)
-        #
+        # Каменная стена с тёплыми вертикальными прожилками
         variation = 0.83 + 0.17*math.sin((fx*7 + fy*5)*math.pi)
         base = [int(c*fog*shade*variation) for c in wall_mid]
         pygame.draw.rect(screen, tuple(max(0,min(255,c)) for c in base),
@@ -317,7 +401,7 @@ def draw_world():
         if ray % 18 == 0:
             pygame.draw.line(screen, tuple(int(c*fog) for c in glow),
                              (x, y), (x, y+wall_h), 2)
-        
+        # Редкие горизонтальные швы кладки
         if ray % 8 == 0:
             pygame.draw.line(screen, tuple(int(c*0.65) for c in wall_dark),
                              (x, y+wall_h//3), (x+SCALE, y+wall_h//3), 1)
@@ -347,43 +431,43 @@ def draw_demon(enemy, z_buffer):
     bob = math.sin(pygame.time.get_ticks()*0.003+enemy["phase"])*size*0.008
     cy = int(HALF_H+bob)
     r = max(8, size//3)
-    
+    # Приглушённые цвета старой военной формы, без ярких мультяшных контуров.
     shadow=(10,9,9); uniform=(48,48,42); uniform_light=(67,65,55)
     skin=(91,91,77); skin_light=(119,113,91); dark=(22,22,21)
     pygame.draw.ellipse(screen, shadow, (cx-r,cy+r//2,r*2,int(r*.62)))
-   
+    # Ноги и тяжёлые ботинки
     pygame.draw.polygon(screen,(35,35,32),[(cx-r//2,cy+r//5),(cx-r//8,cy+r//5),(cx-r//5,cy+r),(cx-r*3//4,cy+r)])
     pygame.draw.polygon(screen,(35,35,32),[(cx+r//8,cy+r//5),(cx+r//2,cy+r//5),(cx+r*3//4,cy+r),(cx+r//4,cy+r)])
     pygame.draw.ellipse(screen,(18,18,17),(cx-r*3//4,cy+r*3//4,r//2,max(3,r//5)))
     pygame.draw.ellipse(screen,(18,18,17),(cx+r//4,cy+r*3//4,r//2,max(3,r//5)))
-    
+    # Торс: куртка/полевой жилет с естественной шириной плеч
     torso=[(cx-r,cy-r//2),(cx-r*4//5,cy-r),(cx+r*4//5,cy-r),(cx+r,cy-r//2),(cx+r*2//3,cy+r//2),(cx-r*2//3,cy+r//2)]
     pygame.draw.polygon(screen,uniform,torso)
     pygame.draw.polygon(screen,uniform_light,[(cx-r*4//5,cy-r),(cx-r//4,cy-r*3//4),(cx-r//3,cy+r//2),(cx-r*2//3,cy+r//2)])
     pygame.draw.line(screen,(28,29,27),(cx,cy-r*3//4),(cx,cy+r//3),max(1,r//15))
-    
+    # Ремни и подсумки
     pygame.draw.line(screen,(30,29,25),(cx-r//2,cy-r//2),(cx+r//2,cy+r//3),max(2,r//12))
     for side in (-1,1):
         pygame.draw.rect(screen,(34,34,29),(cx+side*r//2-r//9,cy-r//5,r//4,r//3),border_radius=2)
         pygame.draw.line(screen,(86,79,62),(cx+side*r//2-r//9,cy-r//5),(cx+side*r//2+r//9,cy-r//5),1)
-    
+    # Шея и вытянутая человеческая голова
     head_y=cy-r-int(r*.48)
     pygame.draw.rect(screen,(68,67,57),(cx-r//5,head_y+r//2,r//2,max(3,r//3)))
     pygame.draw.ellipse(screen,skin,(cx-r//2,head_y-r//2,r,max(7,int(r*1.18))))
     pygame.draw.arc(screen,(53,52,45),(cx-r//2,head_y-r//2,r,int(r*1.18)),3.3,6.1,max(1,r//13))
-    
+    # Глубокие глазницы, нос и сжатый рот — лицо остаётся нечётким на дальней дистанции
     pygame.draw.ellipse(screen,(34,32,29),(cx-r//3,head_y-r//10,max(2,r//5),max(2,r//8)))
     pygame.draw.ellipse(screen,(34,32,29),(cx+r//8,head_y-r//10,max(2,r//5),max(2,r//8)))
     pygame.draw.line(screen,(62,55,46),(cx,head_y),(cx-r//12,head_y+r//5),max(1,r//14))
     pygame.draw.line(screen,(49,43,39),(cx-r//5,head_y+r//3),(cx+r//5,head_y+r//3),max(1,r//14))
-    
+    # Руки в рукавах держат обычный армейский карабин поперёк груди
     armw=max(3,r//5)
     pygame.draw.line(screen,uniform_light,(cx-r*3//4,cy-r//2),(cx-r//5,cy-r//12),armw)
     pygame.draw.line(screen,uniform,(cx+r*3//4,cy-r//2),(cx+r//4,cy-r//12),armw)
     pygame.draw.circle(screen,skin,(cx-r//5,cy-r//12),max(2,r//9))
     pygame.draw.circle(screen,skin,(cx+r//4,cy-r//12),max(2,r//9))
     gy=cy-r//8
-    
+    # приклад, ствольная коробка, длинный ствол и магазин
     pygame.draw.polygon(screen,(28,27,24),[(cx-r,gy-r//10),(cx-r//2,gy-r//8),(cx+r//2,gy-r//8),(cx+r,gy-r//10),(cx+r,gy+r//12),(cx-r,gy+r//12)])
     pygame.draw.rect(screen,(57,54,46),(cx-r//3,gy-r//7,max(4,r//2),max(3,r//4)))
     pygame.draw.line(screen,(17,18,17),(cx+r//3,gy-r//14),(cx+r*5//4,gy-r//14),max(2,r//12))
@@ -393,7 +477,7 @@ def draw_demon(enemy, z_buffer):
         pygame.draw.polygon(screen,(230,177,95),[(cx+r*5//4,gy-r//5),(cx+r*3//2,gy),(cx+r*5//4,gy+r//5)])
 
 def draw_key_and_exit(z_buffer):
-    
+    # Ключ-карта — парящий ромб с руническим знаком
     if not has_key:
         p = project(*key_pos)
         if p:
@@ -409,7 +493,7 @@ def draw_key_and_exit(z_buffer):
                                     [(int(sx),cy-r),(int(sx)+r,cy),
                                      (int(sx),cy+r),(int(sx)-r,cy)], 2)
                 pygame.draw.circle(screen, (25, 70, 80), (int(sx),cy), max(2,r//3))
-    
+    # Выходная дверь видна как отдельная арка в конце коридора
     p = project(*exit_pos)
     if p:
         sx, size, dist, _ = p
@@ -475,6 +559,7 @@ def shoot():
         shotgun_loaded -= 1
     else:
         ammo -= 1
+    play_sfx("shotgun" if weapon_type == "shotgun" else "pistol")
     shot_flash = 0.18 if weapon_type == "shotgun" else 0.13
     weapon_kick = 1.0
     weapon_anim = 0.18
@@ -496,6 +581,9 @@ def shoot():
         target["hp"] -= 2 if weapon_type == "shotgun" else 1
         if target["hp"] <= 0:
             score += 100
+            play_sfx("death")
+        else:
+            play_sfx("enemy")
     message_timer = 0
 
 def start_reload():
@@ -504,6 +592,7 @@ def start_reload():
         return
     reload_timer = 1.35
     reload_stage = 1
+    play_sfx("reload")
 
 def draw_weapon():
     """Оружие и руки в первом лице: сталь, воронение и тёмное дерево."""
@@ -522,7 +611,7 @@ def draw_weapon():
     walk_bob = math.sin(pygame.time.get_ticks()*0.009)*2
     lift = int(kick*(22 if weapon_type=="shotgun" else 14)) + reload_offset + int(walk_bob)
     base_y = HEIGHT-118+lift
-    
+    # Тёмные рукава полевой куртки и руки в перчатках
     pygame.draw.polygon(screen,(31,34,32),[(WIDTH//2-145,HEIGHT),(WIDTH//2-112,base_y+45),(WIDTH//2-55,base_y+65),(WIDTH//2-42,HEIGHT)])
     pygame.draw.polygon(screen,(31,34,32),[(WIDTH//2+145,HEIGHT),(WIDTH//2+112,base_y+45),(WIDTH//2+55,base_y+65),(WIDTH//2+42,HEIGHT)])
     pygame.draw.polygon(screen,(83,76,62),[(WIDTH//2-105,HEIGHT),(WIDTH//2-91,base_y+58),(WIDTH//2-56,base_y+70),(WIDTH//2-38,HEIGHT)])
@@ -530,12 +619,12 @@ def draw_weapon():
     pygame.draw.line(screen,(45,43,37),(WIDTH//2-91,base_y+65),(WIDTH//2-48,base_y+78),11)
     pygame.draw.line(screen,(45,43,37),(WIDTH//2+91,base_y+65),(WIDTH//2+48,base_y+78),11)
     if weapon_type=="shotgun":
-       
+        # Деревянное цевьё и приклад
         pygame.draw.polygon(screen,(34,29,24),[(WIDTH//2-72,HEIGHT),(WIDTH//2-52,base_y+25),(WIDTH//2+52,base_y+25),(WIDTH//2+72,HEIGHT)])
         pygame.draw.polygon(screen,(83,55,36),[(WIDTH//2-47,base_y+13),(WIDTH//2+47,base_y+13),(WIDTH//2+40,base_y+99),(WIDTH//2-40,base_y+99)])
         pygame.draw.line(screen,(125,85,53),(WIDTH//2-39,base_y+25),(WIDTH//2+39,base_y+25),3)
         pygame.draw.line(screen,(47,34,26),(WIDTH//2-35,base_y+83),(WIDTH//2+35,base_y+83),3)
-        
+        # Два стальных ствола с тёмными каналами и бликами
         for off in (-17,17):
             pygame.draw.rect(screen,(20,22,22),(WIDTH//2+off-8,base_y-42,16,72),border_radius=3)
             pygame.draw.rect(screen,(73,76,73),(WIDTH//2+off-6,base_y-41,12,68),border_radius=2)
@@ -545,7 +634,7 @@ def draw_weapon():
         pygame.draw.rect(screen,(95,66,43),(WIDTH//2-13,base_y+47,26,46),border_radius=2)
         pygame.draw.line(screen,(120,119,106),(WIDTH//2-39,base_y+29),(WIDTH//2+39,base_y+29),2)
         if t>0 and 0.35 < 1.35-t < 0.95:
-            
+            # Перелом двустволки и два латунных патронника
             pygame.draw.line(screen,(19,20,19),(WIDTH//2-24,base_y-38),(WIDTH//2-42,base_y-4),5)
             pygame.draw.line(screen,(19,20,19),(WIDTH//2+24,base_y-38),(WIDTH//2+42,base_y-4),5)
             pygame.draw.circle(screen,(169,126,62),(WIDTH//2-17,base_y+1),6)
@@ -554,7 +643,7 @@ def draw_weapon():
             pygame.draw.line(screen,(83,76,62),(WIDTH//2-112,HEIGHT-8),(WIDTH//2-40,base_y+30+reach),17)
             pygame.draw.ellipse(screen,(95,78,59),(WIDTH//2-51,base_y+18+reach,25,18))
     else:
-        
+        # Компактный служебный пистолет: затвор, мушка, спусковая скоба и рукоять.
         pygame.draw.polygon(screen,(25,27,27),[(WIDTH//2-46,HEIGHT),(WIDTH//2-31,base_y+23),(WIDTH//2+31,base_y+23),(WIDTH//2+46,HEIGHT)])
         pygame.draw.polygon(screen,(44,47,46),[(WIDTH//2-31,base_y-5),(WIDTH//2+31,base_y-5),(WIDTH//2+27,base_y+48),(WIDTH//2-27,base_y+48)])
         pygame.draw.rect(screen,(83,87,82),(WIDTH//2-28,base_y-19,56,30),border_radius=3)
@@ -582,13 +671,13 @@ def draw_hud():
     if message_timer > 0:
         t = font.render(message,True,(255,225,190))
         screen.blit(t,t.get_rect(center=(WIDTH//2,30)))
-    
+    # Прицел
     cx,cy=WIDTH//2,HALF_H
     pygame.draw.line(screen,(255,225,195),(cx-9,cy),(cx-3,cy),2)
     pygame.draw.line(screen,(255,225,195),(cx+3,cy),(cx+9,cy),2)
     pygame.draw.line(screen,(255,225,195),(cx,cy-9),(cx,cy-3),2)
     pygame.draw.line(screen,(255,225,195),(cx,cy+3),(cx,cy+9),2)
-    
+    # Никаких указателей номера или названия текущего уровня.
 
 def draw_overlay(title, subtitle, hint):
     overlay=pygame.Surface((WIDTH,HEIGHT),pygame.SRCALPHA)
@@ -605,14 +694,38 @@ def try_exit():
     global level_complete, game_won, message, message_timer
     if math.hypot(player_x-exit_pos[0],player_y-exit_pos[1]) < 1.15:
         if has_key:
+            play_sfx("door")
             if level == 2:
                 game_won = True
             else:
                 level_complete = True
         else:
+            play_sfx("door")
             message, message_timer = "Дверь заперта. Найди ключ-карту!", 1.5
 
 setup_level(0)
+# Тихий циклический ретро-мотив: несколько низких нот с редким пульсом.
+if AUDIO_OK:
+    try:
+        rate = 22050
+        music_samples = bytearray()
+        notes = [55.0, 65.4, 49.0, 73.4, 55.0, 82.4, 65.4, 49.0]
+        beat = 0.42
+        for i in range(int(rate * beat * len(notes))):
+            t = i / rate
+            note_index = min(len(notes)-1, int(t / beat))
+            local_t = t % beat
+            freq = notes[note_index]
+            pulse = max(0.0, 1.0 - local_t / beat) ** 1.7
+            phase = 2 * math.pi * freq * t
+            wave = (0.65 if math.sin(phase) >= 0 else -0.65) + 0.25 * math.sin(phase * 0.5)
+            sample = int(max(-1, min(1, wave * pulse * 0.075)) * 32767)
+            music_samples.extend(struct.pack('<h', sample))
+        music_loop = pygame.mixer.Sound(buffer=bytes(music_samples))
+        music_loop.set_volume(0.55)
+        music_loop.play(loops=-1)
+    except pygame.error:
+        pass
 pygame.event.set_grab(True)
 pygame.mouse.set_visible(False)
 running=True
@@ -654,14 +767,16 @@ while running:
         if dx and not is_wall(player_x+dx+math.copysign(0.16,dx),player_y): player_x+=dx
         if dy and not is_wall(player_x,player_y+dy+math.copysign(0.16,dy)): player_y+=dy
 
-        
+        # Подбор ключ-карты
         if not has_key and math.hypot(player_x-key_pos[0],player_y-key_pos[1])<0.55:
             has_key=True
+            play_sfx("key")
             message,message_timer="Ключ-карта найдена! Теперь ищи дверь.",2.5
 
-        
+        # Подбор небольших запасов здоровья и патронов.
         for item in pickups[:]:
             if math.hypot(player_x-item["x"], player_y-item["y"]) < 0.48:
+                play_sfx("pickup")
                 if item["kind"] == "shotgun":
                     shotgun_owned = True
                     weapon_type = "shotgun"
@@ -689,7 +804,8 @@ while running:
                 health-=5+level
                 enemy["cooldown"]=random.uniform(1.0, 2.0)
                 enemy["attack_flash"]=0.12
-               
+                play_sfx("enemy")
+                # Урон применяется без всплывающего сообщения.
             if 1.15<dist<7 and line_of_sight(enemy["x"],enemy["y"],player_x,player_y):
                 step=enemy["speed"]*dt
                 ex=(player_x-enemy["x"])/dist*step
@@ -705,6 +821,7 @@ while running:
                 loaded=min(2-shotgun_loaded,ammo)
                 shotgun_loaded+=loaded
                 ammo-=loaded
+                play_sfx("reload")
                 message,message_timer="Двустволка перезаряжена",0.8
         for enemy in enemies:
             enemy["attack_flash"]=max(0.0,enemy.get("attack_flash",0.0)-dt)
@@ -725,7 +842,7 @@ while running:
                      "Нажми ENTER, чтобы продолжить, или ESC для выхода")
         if pygame.key.get_pressed()[pygame.K_RETURN]:
             if level == 1 and floor_index == 0:
-                
+                # Лестница ведёт на второй этаж тех же катакомб.
                 setup_level(1, 1)
             else:
                 setup_level(level+1, 0)
@@ -742,3 +859,4 @@ while running:
 
 pygame.quit()
 sys.exit()
+
